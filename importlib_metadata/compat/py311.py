@@ -1,7 +1,8 @@
 import os
 import pathlib
 import sys
-import types
+
+from .._typing_compat import SimpleNamespace
 
 
 def wrap(path):  # pragma: no cover
@@ -13,10 +14,10 @@ def wrap(path):  # pragma: no cover
     of site-packages.
     """
 
-    def relative_to(root, *, walk_up=False):
+    def relative_to(root, *, walk_up: bool = False) -> pathlib.Path:
         return pathlib.Path(os.path.relpath(path, root))
 
-    return types.SimpleNamespace(relative_to=relative_to)
+    return SimpleNamespace(relative_to=relative_to)
 
 
 relative_fix = wrap if sys.version_info < (3, 12) else lambda x: x

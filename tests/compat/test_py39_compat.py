@@ -46,6 +46,7 @@ class OldStdlibFinderTests(fixtures.DistInfoPkgOffPath, unittest.TestCase):
                 candidate = pathlib.Path(path, *fullname.split(".")).with_suffix(".py")
                 if candidate.exists():
                     return spec_from_file_location(fullname, candidate)
+                return None
 
             @classmethod
             def find_distributions(self, context=DistributionFinder.Context()):

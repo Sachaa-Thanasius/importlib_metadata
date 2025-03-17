@@ -31,9 +31,9 @@ class IntegrationTests(fixtures.DistInfoPkg, unittest.TestCase):
             req = packaging.requirements.Requirement(package_spec)
             return version(req.name) in req.specifier
 
-        assert is_installed('distinfo-pkg==1.0')
-        assert is_installed('distinfo-pkg>=1.0,<2.0')
-        assert not is_installed('distinfo-pkg<1.0')
+        assert is_installed("distinfo-pkg==1.0")
+        assert is_installed("distinfo-pkg>=1.0,<2.0")
+        assert not is_installed("distinfo-pkg<1.0")
 
 
 class FinderTests(fixtures.Fixtures, unittest.TestCase):
@@ -47,7 +47,7 @@ class FinderTests(fixtures.Fixtures, unittest.TestCase):
                 pass
 
             def __getattribute__(self, name):
-                if name == '__module__':
+                if name == "__module__":
                     raise AttributeError(name)
                 return super().__getattribute__(name)
 

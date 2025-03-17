@@ -6,16 +6,12 @@ import pathlib
 import shutil
 import sys
 import textwrap
+from importlib import resources
 
 from . import _path
 from ._path import FilesSpec
 from .compat.py39 import os_helper
 from .compat.py312 import import_helper
-
-if sys.version_info >= (3, 9):
-    from importlib import resources
-else:
-    import importlib_resources as resources
 
 
 @contextlib.contextmanager
@@ -115,10 +111,10 @@ class DistInfoPkgEditable(DistInfoPkg):
     Package with a PEP 660 direct_url.json.
     """
 
-    some_hash = '524127ce937f7cb65665130c695abd18ca386f60bb29687efb976faa1596fdcc'
+    some_hash = "524127ce937f7cb65665130c695abd18ca386f60bb29687efb976faa1596fdcc"
     files: FilesSpec = {
-        'distinfo_pkg-1.0.0.dist-info': {
-            'direct_url.json': json.dumps({
+        "distinfo_pkg-1.0.0.dist-info": {
+            "direct_url.json": json.dumps({
                 "archive_info": {
                     "hash": f"sha256={some_hash}",
                     "hashes": {"sha256": f"{some_hash}"},
@@ -336,7 +332,7 @@ build_files = _path.build
 
 
 def build_record(file_defs):
-    return ''.join(f'{name},,\n' for name in record_names(file_defs))
+    return "".join(f"{name},,\n" for name in record_names(file_defs))
 
 
 def record_names(file_defs):
@@ -347,9 +343,7 @@ def record_names(file_defs):
 
 class FileBuilder:
     def unicode_filename(self):
-        return os_helper.FS_NONASCII or self.skip(
-            "File system does not support non-ascii."
-        )
+        return os_helper.FS_NONASCII or self.skip("File system does not support non-ascii.")
 
 
 def DALS(str):
@@ -358,12 +352,12 @@ def DALS(str):
 
 
 class ZipFixtures:
-    root = 'tests.data'
+    root = "tests.data"
 
     def _fixture_on_path(self, filename):
         pkg_file = resources.files(self.root).joinpath(filename)
         file = self.resources.enter_context(resources.as_file(pkg_file))
-        assert file.name.startswith('example'), file.name
+        assert file.name.startswith("example"), file.name
         sys.path.insert(0, str(file))
         self.resources.callback(sys.path.pop, 0)
 

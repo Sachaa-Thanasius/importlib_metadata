@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import functools
 import pathlib
-from typing import TYPE_CHECKING, Mapping, Protocol, Union, runtime_checkable
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Protocol, Union, runtime_checkable
+
 
 if TYPE_CHECKING:
     from typing_extensions import Self
@@ -16,7 +18,7 @@ class Symlink(str):
     """
 
 
-FilesSpec = Mapping[str, Union[str, bytes, Symlink, 'FilesSpec']]
+FilesSpec = Mapping[str, Union[str, bytes, Symlink, "FilesSpec"]]
 
 
 @runtime_checkable
@@ -79,7 +81,7 @@ def _(content: bytes, path: TreeMaker) -> None:
 
 @create.register
 def _(content: str, path: TreeMaker) -> None:
-    path.write_text(content, encoding='utf-8')
+    path.write_text(content, encoding="utf-8")
 
 
 @create.register

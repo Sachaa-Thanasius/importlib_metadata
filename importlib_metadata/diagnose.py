@@ -3,19 +3,19 @@ import sys
 from . import Distribution
 
 
-def inspect(path):
+def inspect(path: str) -> None:
     print("Inspecting", path)
     dists = list(Distribution.discover(path=[path]))
     if not dists:
         return
-    print("Found", len(dists), "packages:", end=' ')
-    print(', '.join(dist.name for dist in dists))
+    print("Found", len(dists), "packages:", end=" ")
+    print(", ".join(dist.name for dist in dists))
 
 
-def run():
+def run() -> None:
     for path in sys.path:
         inspect(path)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     run()
