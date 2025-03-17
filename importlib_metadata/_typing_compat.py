@@ -62,7 +62,7 @@ else:
     SimpleNamespace = type(sys.implementation)
 
 
-def __getattr__(name: str) -> object:
+def __getattr__(name: str, /) -> object:
     if name == "C":
         global C  # noqa: PLW0603
 

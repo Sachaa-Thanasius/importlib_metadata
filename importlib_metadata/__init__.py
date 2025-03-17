@@ -305,6 +305,15 @@ class EntryPoint:
         msg = "EntryPoint objects are immutable."
         raise AttributeError(msg)
 
+    def __getstate__(self):
+        return (self.name, self.value, self.group, self.dist)
+
+    def __setstate__(self, state: tuple[_t.Any, ...]) -> None:
+        object.__setattr__(self, "name", state[0])
+        object.__setattr__(self, "value", state[1])
+        object.__setattr__(self, "group", state[2])
+        object.__setattr__(self, "dist", state[3])
+
 
 class EntryPoints(tuple[EntryPoint, ...]):
     """An immutable collection of selectable EntryPoint objects."""
@@ -488,7 +497,6 @@ class Distribution(metaclass=abc.ABCMeta):
             # (which points to the egg-info file) attribute unchanged.
             or self.read_text("")
         )
-        assert opt_text is not None
         return _adapters.NaturalMessage.from_original(email.message_from_string(opt_text))
 
     @property
@@ -1043,14 +1051,17 @@ def version(distribution_name: str) -> str:
     return distribution(distribution_name).version
 
 
-def _uniquely_named_distributions() -> Generator[Distribution]:
-    seen: set[str | None] = set()
-    for dist in distributions():
-        normalized_name = py39.normalized_name(dist)
-        if normalized_name in seen:
+def _unique(
+    iterable: Iterable[Distribution],
+    key: Callable[[Distribution], object] = py39.normalized_name,
+) -> Generator[Distribution]:
+    seen: set[object] = set()
+    for item in iterable:
+        normalized = key(item)
+        if normalized in seen:
             continue
-        seen.add(normalized_name)
-        yield dist
+        seen.add(normalized)
+        yield item
 
 
 def entry_points(**params: _t.Any) -> EntryPoints:
@@ -1063,7 +1074,7 @@ def entry_points(**params: _t.Any) -> EntryPoints:
     :return: EntryPoints for all installed packages.
     """
 
-    return EntryPoints([ep for dist in _uniquely_named_distributions() for ep in dist.entry_points]).select(**params)
+    return EntryPoints([ep for dist in _unique(distributions()) for ep in dist.entry_points]).select(**params)
 
 
 def files(distribution_name: str) -> _t.Optional[list[_path.PackagePath]]:
@@ -1115,6 +1126,7 @@ def _topmost(name: _path.PackagePath) -> _t.Optional[str]:
 def _get_toplevel_name(name: _path.PackagePath) -> str:
     """Infer a possibly importable module name from a name presumed on sys.path.
 
+    >>> PackagePath = _path.PackagePath
     >>> _get_toplevel_name(PackagePath('foo.py'))
     'foo'
     >>> _get_toplevel_name(PackagePath('foo'))

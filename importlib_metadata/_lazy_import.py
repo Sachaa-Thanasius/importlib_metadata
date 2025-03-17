@@ -182,7 +182,7 @@ class LazyFinder:
 
             # Skip being lazy for non-source modules to avoid issues with extension modules having
             # uninitialized state, especially when loading can't currently be triggered by PyModule_GetState.
-            # ref: https://github.com/python/cpython/issues/85963
+            # Ref: https://github.com/python/cpython/issues/85963
             if (spec is not None) and isinstance(spec.loader, SourceFileLoader):
                 spec.loader = LazyLoader(spec.loader)
 

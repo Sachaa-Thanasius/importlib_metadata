@@ -50,10 +50,11 @@ addopts = ["--import-mode=importlib", "--strict-markers", "--strict-config", "--
 [tool.coverage.run]
 plugins = ["covdefaults"]
 source = ["importlib_metadata", "tests"]
+omit = ["tests/data/*"]
 parallel = true
 
 [tool.coverage.report]
-exclude_lines = ["^\\s*(?:el)?if TYPE_CHECKING:$"]
+exclude_lines = ["^\\s*(el)?if TYPE_CHECKING:$"]
 
 
 # -------- Linter config

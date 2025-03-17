@@ -13,7 +13,7 @@ import packaging.requirements
 import packaging.version
 
 from importlib_metadata import (
-    _compat,
+    _stdlib_compat,
     version,
 )
 
@@ -52,4 +52,4 @@ class FinderTests(fixtures.Fixtures, unittest.TestCase):
                 return super().__getattribute__(name)
 
         self.fixtures.enter_context(fixtures.install_finder(ModuleFreeFinder()))
-        _compat.disable_stdlib_finder()
+        _stdlib_compat.disable_stdlib_finder()

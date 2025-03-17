@@ -46,11 +46,11 @@ class NaturalMessage(email.message.Message):
     ... <BLANKLINE>
     ... Fourth line!
     ... '''.lstrip().replace('<BLANKLINE>', '')
-    >>> msg = Message(email.message_from_string(msg_text))
+    >>> msg = NaturalMessage.from_original(email.message_from_string(msg_text))
     >>> msg['Description']
     'First line of description.\nSecond line of description.\n\nFourth line!\n'
 
-    Message should render even if values contain newlines.
+    NaturalMessage should render even if values contain newlines.
 
     >>> print(msg)
     Name: Foo
