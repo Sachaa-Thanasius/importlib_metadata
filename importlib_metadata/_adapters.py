@@ -130,7 +130,7 @@ class NaturalMessage(email.message.Message):
         if payload := self.get_payload():
             headers.append(("Description", payload))
             self.set_payload("")
-        self._headers = headers  # pyright: ignore [reportUninitializedInstanceVariable]
+        self._headers = headers
 
     def as_string(
         self,

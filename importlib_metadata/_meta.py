@@ -39,6 +39,7 @@ class PackageMetadata(Protocol):
     @overload
     def get_all(self, name: str, failobj: _T) -> Union[list[Any], _T]:
         """Return all values associated with a possibly multi-valued key."""
+        ...
 
     @property
     def json(self) -> dict[str, Union[str, list[str]]]:

@@ -13,6 +13,7 @@ else:
 
 __all__ = (
     # typing
+    "TYPE_CHECKING",
     "TypeAlias",
     "Self",
     # types
@@ -26,7 +27,7 @@ class _PlaceholderGenericAlias(GenericAlias):
 
 
 class _PlaceholderMeta(type):
-    _source_module: str  # pyright: ignore [reportUninitializedInstanceVariable]
+    _source_module: str
 
     def __repr__(self, /) -> str:
         return f"<import placeholder for {self._source_module}.{self.__name__}>"
@@ -70,23 +71,6 @@ def __getattr__(name: str) -> object:
         C = TypeVar("C", bound=type)
 
         return C
-
-    if name == "T":
-        global T  # noqa: PLW0603
-
-        from typing import TypeVar
-
-        T = TypeVar("T")
-
-        return T
-    if name == "U":
-        global U  # noqa: PLW0603
-
-        from typing import TypeVar
-
-        U = TypeVar("U")
-
-        return U
 
     msg = f"module {__name__!r} has no attribute {name!r}"
     raise AttributeError(msg)

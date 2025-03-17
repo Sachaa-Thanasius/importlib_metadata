@@ -1,8 +1,12 @@
 import os
-import pathlib
 import sys
 
+from .._lazy_import import lazy_finder
 from .._typing_compat import SimpleNamespace
+
+
+with lazy_finder:
+    import pathlib
 
 
 def wrap(path):  # pragma: no cover

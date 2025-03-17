@@ -13,9 +13,7 @@ import email
 import functools
 import importlib
 import importlib.machinery
-import operator
 import os
-import pathlib
 import posixpath
 import re
 import sys
@@ -23,25 +21,25 @@ from collections import defaultdict
 from collections.abc import Callable, Generator, Iterable, Mapping
 from itertools import chain, filterfalse, tee
 
-from ._itertools import unique_everseen
 from ._lazy_import import lazy_finder
 from ._stdlib_compat import install
-from ._typing_compat import Self, SimpleNamespace, TypeAlias
+from ._typing_compat import TYPE_CHECKING, Self, SimpleNamespace, TypeAlias
 from .compat import py39, py311
 
 
 with lazy_finder:
     import json
+    import pathlib
     import typing as _t
 
-    from . import _adapters, _meta
+    from . import _adapters, _meta, _path
 
 
 # Copied from typeshed
 _StrPath: TypeAlias = "_t.Union[str, os.PathLike[str]]"
 
 
-__all__ = [
+__all__ = (
     "Distribution",
     "DistributionFinder",
     "PackageMetadata",
@@ -55,10 +53,11 @@ __all__ = [
     "packages_distributions",
     "requires",
     "version",
-]
+)
 
 
 def __getattr__(name: str, /) -> _t.Any:
+    # Lazily import and assign these names.
     if name in {"PackageMetadata", "SimplePath"}:
         global PackageMetadata, SimplePath  # noqa: PLW0603
 
@@ -77,13 +76,8 @@ def __dir__() -> list[str]:
 class PackageNotFoundError(ModuleNotFoundError):
     """The package was not found."""
 
-    def __str__(self) -> str:
-        return f"No package metadata was found for {self.name}"
-
-    @property
-    def name(self) -> str:  # type: ignore[override] # make readonly
-        (name,) = self.args
-        return name
+    def __init__(self, name: str) -> None:
+        super().__init__(f"No package metadata was found for {name}", name=name)
 
 
 class Pair:
@@ -143,12 +137,10 @@ class Sectioned:
     """
 
     @classmethod
-    def section_pairs(cls, text: str):
-        return (
-            section._replace(value=Pair.parse(section.value))
-            for section in cls.read(text, filter_=cls.valid)
-            if section.name is not None
-        )
+    def section_pairs(cls, text: str) -> Generator[Pair]:
+        for section in cls.read(text, filter_=cls.valid):
+            if section.name is not None:
+                yield section._replace(value=Pair.parse(section.value))
 
     @staticmethod
     def read(text: str, filter_: _t.Optional[Callable[[str], object]] = None) -> Generator[Pair]:
@@ -271,7 +263,7 @@ class EntryPoint:
         """
         self._disallow_dist(params)
         attrs = (getattr(self, param) for param in params)
-        return all(map(operator.eq, params.values(), attrs))
+        return all(param_val == attr for param_val, attr in zip(params.values(), attrs))
 
     @staticmethod
     def _disallow_dist(params: dict[str, _t.Any]) -> None:
@@ -350,36 +342,6 @@ class EntryPoints(tuple[EntryPoint, ...]):
         return EntryPoints(ep for ep in self if py39.ep_matches(ep, **params))
 
 
-class PackagePath(pathlib.PurePosixPath):
-    """A reference to a path in a package."""
-
-    __slots__ = ("hash", "size", "dist")
-
-    hash: _t.Optional[FileHash]
-    size: _t.Optional[int]
-    dist: Distribution
-
-    def read_text(self, encoding: str = "utf-8") -> str:
-        return self.locate().read_text(encoding=encoding)
-
-    def read_binary(self) -> bytes:
-        return self.locate().read_bytes()
-
-    def locate(self) -> SimplePath:
-        """Return a path-like object for this path."""
-        return self.dist.locate_file(self)
-
-
-class FileHash:
-    __slots__ = ("mode", "value")
-
-    def __init__(self, spec: str) -> None:
-        self.mode, _, self.value = spec.partition("=")
-
-    def __repr__(self) -> str:
-        return f"<FileHash mode: {self.mode} value: {self.value}>"
-
-
 class Distribution(metaclass=abc.ABCMeta):
     """
     An abstract Python distribution package.
@@ -415,7 +377,7 @@ class Distribution(metaclass=abc.ABCMeta):
         """
 
     @abc.abstractmethod
-    def locate_file(self, path: _StrPath) -> SimplePath:
+    def locate_file(self, path: _StrPath) -> _meta.SimplePath:
         """
         Given a path to a file in this distribution, return a SimplePath
         to it.
@@ -560,7 +522,7 @@ class Distribution(metaclass=abc.ABCMeta):
         )
 
     @property
-    def files(self) -> _t.Optional[list[PackagePath]]:
+    def files(self) -> _t.Optional[list[_path.PackagePath]]:
         """Files in this distribution.
 
         :return: List of PackagePath for this distribution or None
@@ -575,14 +537,14 @@ class Distribution(metaclass=abc.ABCMeta):
         able to resolve filenames provided by the package.
         """
 
-        def make_file(name: str, hash: _t.Optional[str] = None, size_str: _t.Optional[str] = None) -> PackagePath:  # noqa: A002
-            result = PackagePath(name)
-            result.hash = FileHash(hash) if hash else None
+        def make_file(name: str, hash: _t.Optional[str] = None, size_str: _t.Optional[str] = None) -> _path.PackagePath:  # noqa: A002
+            result = _path.PackagePath(name)
+            result.hash = _path.FileHash(hash) if hash else None
             result.size = int(size_str) if size_str else None
             result.dist = self
             return result
 
-        def make_files(lines: _t.Optional[list[str]]) -> Generator[PackagePath]:
+        def make_files(lines: _t.Optional[list[str]]) -> Generator[_path.PackagePath]:
             if lines is None:
                 return None
 
@@ -593,7 +555,9 @@ class Distribution(metaclass=abc.ABCMeta):
             for row in csv.reader(lines):
                 yield make_file(*row)
 
-        def skip_missing_files(package_paths: _t.Optional[Iterable[PackagePath]]) -> _t.Optional[list[PackagePath]]:
+        def skip_missing_files(
+            package_paths: _t.Optional[Iterable[_path.PackagePath]],
+        ) -> _t.Optional[list[_path.PackagePath]]:
             if package_paths is None:
                 return None
             return [path for path in package_paths if path.locate().exists()]
@@ -663,7 +627,7 @@ class Distribution(metaclass=abc.ABCMeta):
 
     def _read_egg_info_reqs(self):
         source = self.read_text("requires.txt")
-        return self._deps_from_requires_text(source) if (source is not None) else None
+        return (self._deps_from_requires_text(source)) if (source is not None) else None
 
     @classmethod
     def _deps_from_requires_text(cls, source: str) -> Generator[str]:
@@ -799,21 +763,15 @@ class FastPath:
     True
     """
 
-    __slots__ = ("root", "lookup")
-
-    _instance_cache: _t.ClassVar[dict[str, Self]] = {}
-
     root: str
     lookup: Callable[[float], Lookup]
 
+    @functools.lru_cache
     def __new__(cls, root: str):
-        try:
-            return cls._instance_cache[root]
-        except KeyError:
-            self = cls._instance_cache[root] = super().__new__(cls)
-            self.root = root
-            self.lookup = functools.lru_cache(self._lookup_uncached)
-            return self
+        self = super().__new__(cls)
+        self.root = root
+        self.lookup = functools.lru_cache(self._lookup_uncached)
+        return self
 
     @property
     def mtime(self) -> _t.Optional[float]:
@@ -846,7 +804,10 @@ class FastPath:
 
     def zip_children(self) -> list[str]:
         # deferred for performance (python/importlib_metadata#502)
-        from zipp.compat.overlay import zipfile
+        if TYPE_CHECKING:
+            import zipfile
+        else:
+            from zipp.compat.overlay import zipfile
 
         zip_path = zipfile.Path(self.root)
         names = zip_path.root.namelist()
@@ -895,8 +856,8 @@ class Lookup:
         """Yield all infos and eggs matching the Prepared query."""
 
         if prepared:
-            assert prepared.normalized
-            assert prepared.legacy_normalized
+            assert prepared.normalized is not None
+            assert prepared.legacy_normalized is not None
 
             infos = self.infos.get(prepared.normalized, [])
             eggs = self.eggs.get(prepared.legacy_normalized, [])
@@ -970,8 +931,7 @@ class MetadataPathFinder(DistributionFinder):
         cls,
         context: DistributionFinder.Context = DistributionFinder.Context(),
     ) -> Iterable[PathDistribution]:
-        """
-        Find distributions.
+        """Find distributions.
 
         Return an iterable of all Distribution instances capable of
         loading the metadata for packages matching ``context.name``
@@ -989,11 +949,11 @@ class MetadataPathFinder(DistributionFinder):
 
     @classmethod
     def invalidate_caches(cls) -> None:
-        FastPath._instance_cache.clear()
+        FastPath.__new__.cache_clear()
 
 
 class PathDistribution(Distribution):
-    def __init__(self, path: SimplePath) -> None:
+    def __init__(self, path: _meta.SimplePath) -> None:
         """Construct a distribution.
 
         :param path: SimplePath indicating the metadata directory.
@@ -1016,7 +976,7 @@ class PathDistribution(Distribution):
 
     read_text.__doc__ = Distribution.read_text.__doc__
 
-    def locate_file(self, path: _StrPath) -> SimplePath:
+    def locate_file(self, path: _StrPath) -> _meta.SimplePath:
         return self._path.parent / path
 
     @property
@@ -1083,13 +1043,14 @@ def version(distribution_name: str) -> str:
     return distribution(distribution_name).version
 
 
-_unique = functools.partial(
-    unique_everseen,
-    key=py39.normalized_name,
-)
-"""
-Wrapper for ``distributions`` to return unique distributions by name.
-"""
+def _uniquely_named_distributions() -> Generator[Distribution]:
+    seen: set[str | None] = set()
+    for dist in distributions():
+        normalized_name = py39.normalized_name(dist)
+        if normalized_name in seen:
+            continue
+        seen.add(normalized_name)
+        yield dist
 
 
 def entry_points(**params: _t.Any) -> EntryPoints:
@@ -1101,11 +1062,11 @@ def entry_points(**params: _t.Any) -> EntryPoints:
 
     :return: EntryPoints for all installed packages.
     """
-    eps = chain.from_iterable(dist.entry_points for dist in _unique(distributions()))
-    return EntryPoints(eps).select(**params)
+
+    return EntryPoints([ep for dist in _uniquely_named_distributions() for ep in dist.entry_points]).select(**params)
 
 
-def files(distribution_name: str) -> _t.Optional[list[PackagePath]]:
+def files(distribution_name: str) -> _t.Optional[list[_path.PackagePath]]:
     """Return a list of files for the named package.
 
     :param distribution_name: The name of the distribution package to query.
@@ -1143,7 +1104,7 @@ def _top_level_declared(dist: Distribution) -> list[str]:
     return (dist.read_text("top_level.txt") or "").split()
 
 
-def _topmost(name: PackagePath) -> _t.Optional[str]:
+def _topmost(name: _path.PackagePath) -> _t.Optional[str]:
     """
     Return the top-most parent as long as there is a parent.
     """
@@ -1151,7 +1112,7 @@ def _topmost(name: PackagePath) -> _t.Optional[str]:
     return top if rest else None
 
 
-def _get_toplevel_name(name: PackagePath) -> str:
+def _get_toplevel_name(name: _path.PackagePath) -> str:
     """Infer a possibly importable module name from a name presumed on sys.path.
 
     >>> _get_toplevel_name(PackagePath('foo.py'))

@@ -6,8 +6,7 @@ import sys
 from collections.abc import Sequence
 from importlib.machinery import ModuleSpec, SourceFileLoader
 
-
-TYPE_CHECKING = False
+from ._typing_compat import TYPE_CHECKING
 
 
 # importlib.abc.Loader changed location in 3.10+ to become cheaper to import.
