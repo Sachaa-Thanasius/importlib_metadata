@@ -3,7 +3,7 @@ import sys
 from . import Distribution
 
 
-def inspect(path):
+def inspect(path: str):
     print("Inspecting", path)
     dists = list(Distribution.discover(path=[path]))
     if not dists:

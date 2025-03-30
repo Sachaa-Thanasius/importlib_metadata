@@ -2,16 +2,17 @@
 Compatibility layer with Python 3.8/3.9
 """
 
-from typing import TYPE_CHECKING, Any, Optional
+from .. import _lazy as _t
+from .._lazy import TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover
     # Prevent circular imports on runtime.
     from .. import Distribution, EntryPoint
 else:
-    Distribution = EntryPoint = Any
+    Distribution = EntryPoint = object
 
 
-def normalized_name(dist: Distribution) -> Optional[str]:
+def normalized_name(dist: Distribution) -> _t.Optional[str]:
     """
     Honor name normalization for distributions that don't provide ``_normalized_name``.
     """

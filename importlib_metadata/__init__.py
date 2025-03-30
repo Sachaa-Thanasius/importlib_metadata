@@ -13,30 +13,23 @@ import abc
 import collections
 import email
 import functools
-import itertools
+import importlib
+import importlib.machinery
 import operator
 import os
 import pathlib
 import posixpath
 import re
 import sys
-import textwrap
-import types
+from collections.abc import Generator, Iterable, Mapping
 from contextlib import suppress
-from importlib import import_module
 from importlib.abc import MetaPathFinder
-from itertools import starmap
-from typing import Any, Iterable, List, Mapping, Match, Optional, Set, cast
+from itertools import chain, filterfalse, starmap, tee
 
-from . import _meta
-from ._collections import FreezableDefaultDict, Pair
-from ._compat import (
-    NullFinder,
-    install,
-)
-from ._functools import method_cache, pass_none
-from ._itertools import always_iterable, bucket, unique_everseen
-from ._meta import PackageMetadata, SimplePath
+from . import _lazy as _l
+from . import _lazy as _t
+from ._compat import install
+from ._lazy import TYPE_CHECKING
 from .compat import py39, py311
 
 __all__ = [
@@ -55,31 +48,56 @@ __all__ = [
     'version',
 ]
 
+if TYPE_CHECKING:
+    from ._meta import PackageMetadata, SimplePath
+
+
+# Type checkers (well, mypy) needs this block to understand what __getattr__() does currently.
+def __getattr__(name: str) -> _t.Any:
+    if name in {"PackageMetadata", "SimplePath"}:
+        obj = getattr(_l._meta, name)
+    else:
+        msg = f"module {__name__!r} has no attribute {name!r}"
+        raise AttributeError(msg)
+
+    globals()[name] = obj
+    return obj
+
 
 class PackageNotFoundError(ModuleNotFoundError):
     """The package was not found."""
 
-    def __str__(self) -> str:
-        return f"No package metadata was found for {self.name}"
+    def __init__(self, name: str):
+        super().__init__(f"No package metadata was found for {name}", name=name)
 
-    @property
-    def name(self) -> str:  # type: ignore[override] # make readonly
-        (name,) = self.args
-        return name
+
+class Pair(collections.namedtuple('Pair', 'name value')):
+    @classmethod
+    def parse(cls, text):
+        return cls(*map(str.strip, text.split("=", 1)))
 
 
 class Sectioned:
     """
     A simple entry point config parser for performance
 
-    >>> for item in Sectioned.read(Sectioned._sample):
+    >>> sample = '''
+    ... [sec1]
+    ... # comments ignored
+    ... a = 1
+    ... b = 2
+    ...
+    ... [sec2]
+    ... a = 2
+    ... '''
+    >>> for item in Sectioned.read(sample):
     ...     print(item)
     Pair(name='sec1', value='# comments ignored')
     Pair(name='sec1', value='a = 1')
     Pair(name='sec1', value='b = 2')
     Pair(name='sec2', value='a = 2')
 
-    >>> res = Sectioned.section_pairs(Sectioned._sample)
+    >>> res = Sectioned.section_pairs(sample)
     >>> item = next(res)
     >>> item.name
     'sec1'
@@ -96,18 +114,6 @@ class Sectioned:
     >>> list(res)
     []
     """
-
-    _sample = textwrap.dedent(
-        """
-        [sec1]
-        # comments ignored
-        a = 1
-        b = 2
-
-        [sec2]
-        a = 2
-        """
-    ).lstrip()
 
     @classmethod
     def section_pairs(cls, text):
@@ -175,18 +181,19 @@ class EntryPoint:
     value: str
     group: str
 
-    dist: Optional[Distribution] = None
+    dist: _t.Optional[Distribution] = None
 
     def __init__(self, name: str, value: str, group: str) -> None:
         vars(self).update(name=name, value=value, group=group)
 
-    def load(self) -> Any:
+    def load(self) -> _t.Any:
         """Load the entry point from its definition. If only a module
         is indicated by the value, return that module. Otherwise,
         return the named object.
         """
-        match = cast(Match, self.pattern.match(self.value))
-        module = import_module(match.group('module'))
+        match = self.pattern.match(self.value)
+        assert match is not None
+        module = importlib.import_module(match.group('module'))
         attrs = filter(None, (match.group('attr') or '').split('.'))
         return functools.reduce(getattr, attrs, module)
 
@@ -203,7 +210,7 @@ class EntryPoint:
         return match.group('attr')
 
     @property
-    def extras(self) -> List[str]:
+    def extras(self) -> list[str]:
         match = self.pattern.match(self.value)
         assert match is not None
         return re.findall(r'\w+', match.group('extras') or '')
@@ -274,7 +281,7 @@ class EntryPoint:
         return hash(self._key())
 
 
-class EntryPoints(tuple):
+class EntryPoints(tuple[EntryPoint, ...]):
     """
     An immutable collection of selectable EntryPoint objects.
     """
@@ -305,14 +312,14 @@ class EntryPoints(tuple):
         return EntryPoints(ep for ep in self if py39.ep_matches(ep, **params))
 
     @property
-    def names(self) -> Set[str]:
+    def names(self) -> set[str]:
         """
         Return the set of all names of all entry points.
         """
         return {ep.name for ep in self}
 
     @property
-    def groups(self) -> Set[str]:
+    def groups(self) -> set[str]:
         """
         Return the set of all groups of all entry points.
         """
@@ -333,19 +340,19 @@ class EntryPoints(tuple):
 class PackagePath(pathlib.PurePosixPath):
     """A reference to a path in a package"""
 
-    hash: Optional[FileHash]
-    size: int
+    hash: _t.Optional[FileHash]
+    size: _t.Optional[int]
     dist: Distribution
+
+    def locate(self) -> _l._meta.SimplePath:
+        """Return a path-like object for this path"""
+        return self.dist.locate_file(self)
 
     def read_text(self, encoding: str = 'utf-8') -> str:
         return self.locate().read_text(encoding=encoding)
 
     def read_binary(self) -> bytes:
         return self.locate().read_bytes()
-
-    def locate(self) -> SimplePath:
-        """Return a path-like object for this path"""
-        return self.dist.locate_file(self)
 
 
 class FileHash:
@@ -368,7 +375,7 @@ class Distribution(metaclass=abc.ABCMeta):
     """
 
     @abc.abstractmethod
-    def read_text(self, filename) -> Optional[str]:
+    def read_text(self, filename: str) -> _t.Optional[str]:
         """Attempt to load metadata file given by the name.
 
         Python distribution metadata is organized by blobs of text
@@ -391,7 +398,7 @@ class Distribution(metaclass=abc.ABCMeta):
         """
 
     @abc.abstractmethod
-    def locate_file(self, path: str | os.PathLike[str]) -> SimplePath:
+    def locate_file(self, path: str | os.PathLike[str]) -> _l._meta.SimplePath:
         """
         Given a path to a file in this distribution, return a SimplePath
         to it.
@@ -428,7 +435,7 @@ class Distribution(metaclass=abc.ABCMeta):
 
     @classmethod
     def discover(
-        cls, *, context: Optional[DistributionFinder.Context] = None, **kwargs
+        cls, *, context: _t.Optional[DistributionFinder.Context] = None, **kwargs
     ) -> Iterable[Distribution]:
         """Return an iterable of Distribution objects for all packages.
 
@@ -442,7 +449,7 @@ class Distribution(metaclass=abc.ABCMeta):
         if context and kwargs:
             raise ValueError("cannot accept context and kwargs")
         context = context or DistributionFinder.Context(**kwargs)
-        return itertools.chain.from_iterable(
+        return chain.from_iterable(
             resolver(context) for resolver in cls._discover_resolvers()
         )
 
@@ -453,8 +460,12 @@ class Distribution(metaclass=abc.ABCMeta):
 
         Ref python/importlib_resources#489.
         """
-        buckets = bucket(dists, lambda dist: bool(dist.metadata))
-        return itertools.chain(buckets[True], buckets[False])
+        dists1, dists2 = tee(dists)
+
+        def has_metadata(dist: Distribution) -> bool:
+            return bool(dist.metadata)
+
+        return chain(filter(has_metadata, dists1), filterfalse(has_metadata, dists2))
 
     @staticmethod
     def at(path: str | os.PathLike[str]) -> Distribution:
@@ -474,7 +485,7 @@ class Distribution(metaclass=abc.ABCMeta):
         return filter(None, declared)
 
     @property
-    def metadata(self) -> _meta.PackageMetadata:
+    def metadata(self) -> _l._meta.PackageMetadata:
         """Return the parsed metadata for this Distribution.
 
         The returned object will have keys that name the various bits of
@@ -495,7 +506,7 @@ class Distribution(metaclass=abc.ABCMeta):
             # (which points to the egg-info file) attribute unchanged.
             or self.read_text('')
         )
-        text = cast(str, opt_text)
+        text = opt_text or ''
         return _adapters.Message(email.message_from_string(text))
 
     @property
@@ -524,7 +535,7 @@ class Distribution(metaclass=abc.ABCMeta):
         return EntryPoints._from_text_for(self.read_text('entry_points.txt'), self)
 
     @property
-    def files(self) -> Optional[List[PackagePath]]:
+    def files(self) -> _t.Optional[list[PackagePath]]:
         """Files in this distribution.
 
         :return: List of PackagePath for this distribution or None
@@ -546,7 +557,6 @@ class Distribution(metaclass=abc.ABCMeta):
             result.dist = self
             return result
 
-        @pass_none
         def make_files(lines):
             # Delay csv import, since Distribution.files is not as widely used
             # as other parts of importlib.metadata
@@ -554,17 +564,16 @@ class Distribution(metaclass=abc.ABCMeta):
 
             return starmap(make_file, csv.reader(lines))
 
-        @pass_none
         def skip_missing_files(package_paths):
             return list(filter(lambda path: path.locate().exists(), package_paths))
 
-        return skip_missing_files(
-            make_files(
-                self._read_files_distinfo()
-                or self._read_files_egginfo_installed()
-                or self._read_files_egginfo_sources()
-            )
+        file_lines = (
+            self._read_files_distinfo()
+            or self._read_files_egginfo_installed()
+            or self._read_files_egginfo_sources()
         )
+        lines_found = file_lines is not None
+        return skip_missing_files(make_files(file_lines)) if lines_found else None
 
     def _read_files_distinfo(self):
         """
@@ -616,7 +625,7 @@ class Distribution(metaclass=abc.ABCMeta):
         return text and map('"{}"'.format, text.splitlines())
 
     @property
-    def requires(self) -> Optional[List[str]]:
+    def requires(self) -> _t.Optional[list[str]]:
         """Generated requirements specified for this Distribution"""
         reqs = self._read_dist_info_reqs() or self._read_egg_info_reqs()
         return reqs and list(reqs)
@@ -626,7 +635,11 @@ class Distribution(metaclass=abc.ABCMeta):
 
     def _read_egg_info_reqs(self):
         source = self.read_text('requires.txt')
-        return pass_none(self._deps_from_requires_text)(source)
+        return (
+            list(self._deps_from_requires_text(source))
+            if (source is not None)
+            else None
+        )
 
     @classmethod
     def _deps_from_requires_text(cls, source):
@@ -675,10 +688,10 @@ class Distribution(metaclass=abc.ABCMeta):
         # Deferred for performance (python/importlib_metadata#503)
         import json
 
-        return pass_none(json.loads)(
-            self.read_text(filename),
-            object_hook=lambda data: types.SimpleNamespace(**data),
-        )
+        source = self.read_text(filename)
+        if source is None:
+            return None
+        return json.loads(source, object_hook=lambda data: _l.SimpleNamespace(**data))
 
 
 class DistributionFinder(MetaPathFinder):
@@ -722,7 +735,7 @@ class DistributionFinder(MetaPathFinder):
             vars(self).update(kwargs)
 
         @property
-        def path(self) -> List[str]:
+        def path(self) -> list[str]:
             """
             The sequence of directory path that a distribution finder
             should search.
@@ -765,6 +778,7 @@ class FastPath:
 
     def __init__(self, root):
         self.root = root
+        self.lookup = functools.lru_cache(self.lookup)
 
     def joinpath(self, child):
         return pathlib.Path(self.root, child)
@@ -795,7 +809,6 @@ class FastPath:
             return os.stat(self.root).st_mtime
         self.lookup.cache_clear()
 
-    @method_cache
     def lookup(self, mtime):
         return Lookup(self)
 
@@ -816,8 +829,8 @@ class Lookup:
 
         base = os.path.basename(path.root).lower()
         base_is_egg = base.endswith(".egg")
-        self.infos = FreezableDefaultDict(list)
-        self.eggs = FreezableDefaultDict(list)
+        self.infos = collections.defaultdict(list)
+        self.eggs = collections.defaultdict(list)
 
         for child in path.children():
             low = child.lower()
@@ -831,24 +844,24 @@ class Lookup:
                 legacy_normalized = Prepared.legacy_normalize(name)
                 self.eggs[legacy_normalized].append(path.joinpath(child))
 
-        self.infos.freeze()
-        self.eggs.freeze()
+        self.infos.default_factory = None
+        self.eggs.default_factory = None
 
     def search(self, prepared: Prepared):
         """
         Yield all infos and eggs matching the Prepared query.
         """
         infos = (
-            self.infos[prepared.normalized]
+            self.infos.get(prepared.normalized, [])
             if prepared
-            else itertools.chain.from_iterable(self.infos.values())
+            else chain.from_iterable(self.infos.values())
         )
         eggs = (
-            self.eggs[prepared.legacy_normalized]
+            self.eggs.get(prepared.legacy_normalized, [])
             if prepared
-            else itertools.chain.from_iterable(self.eggs.values())
+            else chain.from_iterable(self.eggs.values())
         )
-        return itertools.chain(infos, eggs)
+        return chain(infos, eggs)
 
 
 class Prepared:
@@ -874,7 +887,7 @@ class Prepared:
     normalized = None
     legacy_normalized = None
 
-    def __init__(self, name: Optional[str]):
+    def __init__(self, name: _t.Optional[str]):
         self.name = name
         if name is None:
             return
@@ -901,12 +914,20 @@ class Prepared:
 
 
 @install
-class MetadataPathFinder(NullFinder, DistributionFinder):
+class MetadataPathFinder(DistributionFinder):
     """A degenerate finder for distribution packages on the file system.
 
     This finder supplies only a find_distributions() method for versions
     of Python that do not have a PathFinder find_distributions().
     """
+
+    @classmethod
+    def find_spec(cls, *args, **kwargs):
+        """
+        A null finder method so that MetadataPathFinder qualifies as a meta path finder,
+        but can defer spec finding to the rest of sys.meta_path.
+        """
+        return None
 
     @classmethod
     def find_distributions(
@@ -927,7 +948,7 @@ class MetadataPathFinder(NullFinder, DistributionFinder):
     def _search_paths(cls, name, paths):
         """Find metadata directories in paths heuristically."""
         prepared = Prepared(name)
-        return itertools.chain.from_iterable(
+        return chain.from_iterable(
             path.search(prepared) for path in map(FastPath, paths)
         )
 
@@ -937,14 +958,14 @@ class MetadataPathFinder(NullFinder, DistributionFinder):
 
 
 class PathDistribution(Distribution):
-    def __init__(self, path: SimplePath) -> None:
+    def __init__(self, path: _l._meta.SimplePath) -> None:
         """Construct a distribution.
 
         :param path: SimplePath indicating the metadata directory.
         """
         self._path = path
 
-    def read_text(self, filename: str | os.PathLike[str]) -> Optional[str]:
+    def read_text(self, filename: str | os.PathLike[str]) -> _t.Optional[str]:
         with suppress(
             FileNotFoundError,
             IsADirectoryError,
@@ -958,7 +979,7 @@ class PathDistribution(Distribution):
 
     read_text.__doc__ = Distribution.read_text.__doc__
 
-    def locate_file(self, path: str | os.PathLike[str]) -> SimplePath:
+    def locate_file(self, path: str | os.PathLike[str]) -> _l._meta.SimplePath:
         return self._path.parent / path
 
     @property
@@ -968,10 +989,10 @@ class PathDistribution(Distribution):
         normalized name from the file system path.
         """
         stem = os.path.basename(str(self._path))
-        return (
-            pass_none(Prepared.normalize)(self._name_from_stem(stem))
-            or super()._normalized_name
-        )
+        name = self._name_from_stem(stem)
+        if name is not None:
+            return Prepared.normalize(name)
+        return super()._normalized_name
 
     @staticmethod
     def _name_from_stem(stem):
@@ -1008,7 +1029,7 @@ def distributions(**kwargs) -> Iterable[Distribution]:
     return Distribution.discover(**kwargs)
 
 
-def metadata(distribution_name: str) -> _meta.PackageMetadata:
+def metadata(distribution_name: str) -> _l._meta.PackageMetadata:
     """Get the metadata for the named package.
 
     :param distribution_name: The name of the distribution package to query.
@@ -1027,13 +1048,16 @@ def version(distribution_name: str) -> str:
     return distribution(distribution_name).version
 
 
-_unique = functools.partial(
-    unique_everseen,
-    key=py39.normalized_name,
-)
-"""
-Wrapper for ``distributions`` to return unique distributions by name.
-"""
+def _unique(dists: Iterable[Distribution]) -> Generator[Distribution]:
+    """
+    Wrapper for ``distributions`` to return unique distributions by name.
+    """
+    seen: set[str | None] = set()
+    for dist in dists:
+        k = py39.normalized_name(dist)
+        if k not in seen:
+            seen.add(k)
+            yield dist
 
 
 def entry_points(**params) -> EntryPoints:
@@ -1045,13 +1069,11 @@ def entry_points(**params) -> EntryPoints:
 
     :return: EntryPoints for all installed packages.
     """
-    eps = itertools.chain.from_iterable(
-        dist.entry_points for dist in _unique(distributions())
-    )
+    eps = chain.from_iterable(dist.entry_points for dist in _unique(distributions()))
     return EntryPoints(eps).select(**params)
 
 
-def files(distribution_name: str) -> Optional[List[PackagePath]]:
+def files(distribution_name: str) -> _t.Optional[list[PackagePath]]:
     """Return a list of files for the named package.
 
     :param distribution_name: The name of the distribution package to query.
@@ -1060,7 +1082,7 @@ def files(distribution_name: str) -> Optional[List[PackagePath]]:
     return distribution(distribution_name).files
 
 
-def requires(distribution_name: str) -> Optional[List[str]]:
+def requires(distribution_name: str) -> _t.Optional[list[str]]:
     """
     Return a list of requirements for the named package.
 
@@ -1070,7 +1092,7 @@ def requires(distribution_name: str) -> Optional[List[str]]:
     return distribution(distribution_name).requires
 
 
-def packages_distributions() -> Mapping[str, List[str]]:
+def packages_distributions() -> Mapping[str, list[str]]:
     """
     Return a mapping of top-level packages to their
     distributions.
@@ -1091,7 +1113,7 @@ def _top_level_declared(dist):
     return (dist.read_text('top_level.txt') or '').split()
 
 
-def _topmost(name: PackagePath) -> Optional[str]:
+def _topmost(name: PackagePath) -> _t.Optional[str]:
     """
     Return the top-most parent as long as there is a parent.
     """
@@ -1117,16 +1139,31 @@ def _get_toplevel_name(name: PackagePath) -> str:
     >>> _get_toplevel_name(PackagePath('foo.dist-info'))
     'foo.dist-info'
     """
-    # Defer import of inspect for performance (python/cpython#118761)
-    import inspect
-
-    return _topmost(name) or inspect.getmodulename(name) or str(name)
+    return _topmost(name) or _get_module_name(name) or str(name)
 
 
-def _top_level_inferred(dist):
-    opt_names = set(map(_get_toplevel_name, always_iterable(dist.files)))
+def _get_module_name(path: _t.Union[str, os.PathLike[str]]):
+    """Vendored version of inspect.getmodulename() to avoid an expensive import.
 
-    def importable_name(name):
+    Orignal docstring below:
+
+    Return the module name for a given file, or None.
+    """
+    fname = os.path.basename(path)
+    # Check for paths that look like an actual module file
+    suffixes = [(-len(suffix), suffix) for suffix in importlib.machinery.all_suffixes()]
+    suffixes.sort()  # try longest suffixes first, in case they overlap
+    for neglen, suffix in suffixes:
+        if fname.endswith(suffix):
+            return fname[:neglen]
+    return None
+
+
+def _top_level_inferred(dist: Distribution):
+    dist_files = [] if (dist.files is None) else dist.files
+    opt_names = set(map(_get_toplevel_name, dist_files))
+
+    def importable_name(name: str) -> bool:
         return '.' not in name
 
     return filter(importable_name, opt_names)

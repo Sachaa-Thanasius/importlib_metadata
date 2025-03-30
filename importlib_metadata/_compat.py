@@ -1,7 +1,6 @@
-import platform
 import sys
 
-__all__ = ['install', 'NullFinder']
+__all__ = ['install']
 
 
 def install(cls):
@@ -33,24 +32,3 @@ def disable_stdlib_finder():
 
     for finder in filter(matches, sys.meta_path):  # pragma: nocover
         del finder.find_distributions
-
-
-class NullFinder:
-    """
-    A "Finder" (aka "MetaPathFinder") that never finds any modules,
-    but may find distributions.
-    """
-
-    @staticmethod
-    def find_spec(*args, **kwargs):
-        return None
-
-
-def pypy_partial(val):
-    """
-    Adjust for variable stacklevel on partial under PyPy.
-
-    Workaround for #327.
-    """
-    is_pypy = platform.python_implementation() == 'PyPy'
-    return val + is_pypy

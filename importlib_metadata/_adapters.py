@@ -1,9 +1,10 @@
+from __future__ import annotations
+
 import email.message
 import email.policy
-import re
 import textwrap
 
-from ._text import FoldedCase
+from . import _lazy as _t
 
 
 class RawPolicy(email.policy.EmailPolicy):
@@ -55,7 +56,7 @@ class Message(email.message.Message):
 
     multiple_use_keys = set(
         map(
-            FoldedCase,
+            str.lower,
             [
                 'Classifier',
                 'Obsoletes-Dist',
@@ -82,11 +83,7 @@ class Message(email.message.Message):
     def __init__(self, *args, **kwargs):
         self._headers = self._repair_headers()
 
-    # suppress spurious error from mypy
-    def __iter__(self):
-        return super().__iter__()
-
-    def __getitem__(self, item):
+    def __getitem__(self, name: str):
         """
         Override parent behavior to typical dict behavior.
 
@@ -96,9 +93,9 @@ class Message(email.message.Message):
 
         Ref python/importlib_metadata#371.
         """
-        res = super().__getitem__(item)
+        res = super().__getitem__(name)
         if res is None:
-            raise KeyError(item)
+            raise KeyError(name)
         return res
 
     def _repair_headers(self):
@@ -115,8 +112,14 @@ class Message(email.message.Message):
             self.set_payload('')
         return headers
 
-    def as_string(self):
-        return super().as_string(policy=RawPolicy())
+    def as_string(
+        self,
+        unixfrom: bool = False,
+        maxheaderlen: int = 0,
+        policy: _t.Optional[email.policy.Policy[_t.Any]] = None,
+    ) -> str:
+        policy = policy or RawPolicy()
+        return super().as_string(unixfrom, maxheaderlen, policy)
 
     @property
     def json(self):
@@ -125,11 +128,13 @@ class Message(email.message.Message):
         per PEP 0566.
         """
 
-        def transform(key):
+        def transform(key: str):
+            key = key.lower()
             value = self.get_all(key) if key in self.multiple_use_keys else self[key]
-            if key == 'Keywords':
-                value = re.split(r'\s+', value)
-            tk = key.lower().replace('-', '_')
+            if key == 'keywords':
+                assert isinstance(value, str)
+                value = value.split()
+            tk = key.replace('-', '_')
             return tk, value
 
-        return dict(map(transform, map(FoldedCase, self)))
+        return dict(map(transform, self))
