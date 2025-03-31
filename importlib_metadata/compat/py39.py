@@ -6,10 +6,10 @@ from __future__ import annotations
 
 import importlib_metadata as im
 
-from .._lazy_import import lazy_finder
+from .. import _lazy_import
 
 
-with lazy_finder:
+with _lazy_import.finder:
     import typing as _t
 
 

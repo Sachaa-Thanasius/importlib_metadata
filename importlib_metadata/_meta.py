@@ -2,14 +2,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterator
-from typing import (
-    Any,
-    Optional,
-    Protocol,
-    TypeVar,
-    Union,
-    overload,
-)
+from typing import Any, Optional, Protocol, TypeVar, Union, overload
 
 from ._typing_compat import Self, TypeAlias
 
@@ -50,12 +43,12 @@ class PackageMetadata(Protocol):
 class SimplePath(Protocol):
     """A minimal subset of pathlib.Path required by Distribution."""
 
-    def joinpath(self, other: _StrPath) -> SimplePath: ...
+    @property
+    def parent(self) -> Self: ...
 
     def __truediv__(self, other: _StrPath) -> SimplePath: ...
 
-    @property
-    def parent(self) -> Self: ...
+    def joinpath(self, other: _StrPath) -> SimplePath: ...
 
     def read_text(self, encoding: Optional[str] = None) -> str: ...
 

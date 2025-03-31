@@ -4,11 +4,11 @@ import email.message
 import email.policy
 import textwrap
 
-from ._lazy_import import lazy_finder
+from . import _lazy_import
 from ._typing_compat import Self
 
 
-with lazy_finder:
+with _lazy_import.finder:
     import typing as _t
 
 
@@ -29,7 +29,7 @@ class RawPolicy(email.policy.EmailPolicy):
         return f"{name}: {folded}{self.linesep}"
 
 
-class NaturalMessage(email.message.Message):
+class MetadataMessage(email.message.Message):
     r"""Specialized Message subclass to handle metadata naturally.
 
     Reads values that may have newlines in them and converts the
@@ -46,11 +46,11 @@ class NaturalMessage(email.message.Message):
     ... <BLANKLINE>
     ... Fourth line!
     ... '''.lstrip().replace('<BLANKLINE>', '')
-    >>> msg = NaturalMessage.from_original(email.message_from_string(msg_text))
+    >>> msg = MetadataMessage.from_original(email.message_from_string(msg_text))
     >>> msg['Description']
     'First line of description.\nSecond line of description.\n\nFourth line!\n'
 
-    NaturalMessage should render even if values contain newlines.
+    MetadataMessage should render even if values contain newlines.
 
     >>> print(msg)
     Name: Foo
@@ -65,7 +65,7 @@ class NaturalMessage(email.message.Message):
     <BLANKLINE>
     """
 
-    multiple_use_keys = frozenset([
+    multiple_use_keys: _t.ClassVar = {
         key.lower()
         for key in (
             "Classifier",
@@ -79,7 +79,7 @@ class NaturalMessage(email.message.Message):
             "Supported-Platform",
             "Dynamic",
         )
-    ])
+    }
     """Keys that may be indicated multiple times per PEP 566."""
 
     def __init__(self, *args: _t.Any, **kwargs: _t.Any) -> None:

@@ -4,10 +4,10 @@ import pathlib
 
 import importlib_metadata
 
-from ._lazy_import import lazy_finder
+from . import _lazy_import
 
 
-with lazy_finder:
+with _lazy_import.finder:
     import typing as _t
 
     from . import _meta

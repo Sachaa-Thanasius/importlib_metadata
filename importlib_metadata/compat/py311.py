@@ -1,11 +1,11 @@
 import os
 import sys
+import types
 
-from .._lazy_import import lazy_finder
-from .._typing_compat import SimpleNamespace
+from .. import _lazy_import
 
 
-with lazy_finder:
+with _lazy_import.finder:
     import pathlib
 
 
@@ -21,7 +21,7 @@ def wrap(path):  # pragma: no cover
     def relative_to(root, *, walk_up: bool = False) -> pathlib.Path:
         return pathlib.Path(os.path.relpath(path, root))
 
-    return SimpleNamespace(relative_to=relative_to)
+    return types.SimpleNamespace(relative_to=relative_to)
 
 
 relative_fix = wrap if sys.version_info < (3, 12) else lambda x: x

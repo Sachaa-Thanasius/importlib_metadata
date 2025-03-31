@@ -2,13 +2,21 @@ from __future__ import annotations
 
 import sys
 
-from . import _typing_compat as _tc
+
+TYPE_CHECKING = False
+
+if TYPE_CHECKING:
+    from typing import TypeVar as _TypeVar
+
+    C = _TypeVar("C", bound=type)
+else:
+    C = type
 
 
 __all__ = ("install",)
 
 
-def install(cls: _tc.C) -> _tc.C:
+def install(cls: C) -> C:
     """Class decorator for installation on sys.meta_path.
 
     Adds the backport DistributionFinder to sys.meta_path and

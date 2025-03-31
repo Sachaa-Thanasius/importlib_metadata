@@ -12,31 +12,29 @@ import abc
 import email
 import functools
 import importlib
+import importlib.abc
 import importlib.machinery
 import os
 import posixpath
 import re
 import sys
+import types
 from collections import defaultdict
 from collections.abc import Callable, Generator, Iterable, Mapping
 from itertools import chain, filterfalse, tee
 
-from ._lazy_import import lazy_finder
-from ._stdlib_compat import install
-from ._typing_compat import TYPE_CHECKING, Self, SimpleNamespace, TypeAlias
+from . import _lazy_import, _stdlib_compat
+from ._typing_compat import TYPE_CHECKING, Self, StrPath
 from .compat import py39, py311
 
 
-with lazy_finder:
+with _lazy_import.finder:
+    import csv
     import json
     import pathlib
     import typing as _t
 
     from . import _adapters, _meta, _path
-
-
-# Copied from typeshed
-_StrPath: TypeAlias = "_t.Union[str, os.PathLike[str]]"
 
 
 __all__ = (
@@ -80,26 +78,37 @@ class PackageNotFoundError(ModuleNotFoundError):
         super().__init__(f"No package metadata was found for {name}", name=name)
 
 
-class Pair:
-    __slots__ = ("name", "value")
+class _RawEntryPoint:
+    __slots__ = ("group", "name", "obj_ref")
 
-    def __init__(self, name: str, value: _t.Any) -> None:
-        self.name: str = name
-        self.value: _t.Any = value
+    def __init__(self, group: str, name: str, obj_ref: str):
+        self.group = group
+        self.name = name
+        self.obj_ref = obj_ref
 
     def __repr__(self) -> str:
-        return f"{self.__class__.__name__}(name={self.name!r}, value={self.value!r})"
-
-    def _replace(self, **kwargs: _t.Any) -> Self:
-        new_values = {name: getattr(self, name) for name in self.__slots__} | kwargs
-        return self.__class__(**new_values)
-
-    @classmethod
-    def parse(cls, text: str) -> Self:
-        return cls(*map(str.strip, text.split("=", 1)))
+        return f"{self.__class__.__name__}(group={self.group!r}, name={self.name!r}, obj_ref={self.obj_ref!r})"
 
 
-class Sectioned:
+class _RawEntryPointLine:
+    __slots__ = ("group", "line")
+
+    def __init__(self, group: _t.Optional[str], line: str) -> None:
+        self.group = group
+        self.line = line
+
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}(name={self.group!r}, line={self.line!r})"
+
+    def parse_ep(self) -> _RawEntryPoint:
+        if self.group is None:
+            msg = "group name must exist to get a raw entrypoint"
+            raise TypeError(msg)
+
+        return _RawEntryPoint(self.group, *[s.strip() for s in self.line.split("=", 1)])
+
+
+class _EntryPointConfigParser:
     """A simple entry point config parser for performance.
 
     >>> sample = '''
@@ -111,51 +120,51 @@ class Sectioned:
     ... [sec2]
     ... a = 2
     ... '''
-    >>> for item in Sectioned.read(sample):
+    >>> for item in _EntryPointConfigParser.read(sample):
     ...     print(item)
-    Pair(name='sec1', value='# comments ignored')
-    Pair(name='sec1', value='a = 1')
-    Pair(name='sec1', value='b = 2')
-    Pair(name='sec2', value='a = 2')
+    _RawEntryPointLine(name='sec1', line='# comments ignored')
+    _RawEntryPointLine(name='sec1', line='a = 1')
+    _RawEntryPointLine(name='sec1', line='b = 2')
+    _RawEntryPointLine(name='sec2', line='a = 2')
 
-    >>> res = Sectioned.section_pairs(sample)
+    >>> res = _EntryPointConfigParser.section_pairs(sample)
     >>> item = next(res)
-    >>> item.name
+    >>> item.group
     'sec1'
-    >>> item.value
-    Pair(name='a', value='1')
-    >>> item = next(res)
-    >>> item.value
-    Pair(name='b', value='2')
-    >>> item = next(res)
     >>> item.name
-    'sec2'
-    >>> item.value
-    Pair(name='a', value='2')
+    'a'
+    >>> item.obj_ref
+    '1'
+    >>> item = next(res)
+    >>> item.group
+    'sec1'
+    >>> item.name
+    'b'
+    >>> item.obj_ref
+    '2'
     >>> list(res)
-    []
+    [_RawEntryPoint(group='sec2', name='a', obj_ref='2')]
     """
 
-    @classmethod
-    def section_pairs(cls, text: str) -> Generator[Pair]:
-        for section in cls.read(text, filter_=cls.valid):
-            if section.name is not None:
-                yield section._replace(value=Pair.parse(section.value))
+    @staticmethod
+    def is_valid(line: str) -> object:
+        return line and not line.startswith("#")
 
     @staticmethod
-    def read(text: str, filter_: _t.Optional[Callable[[str], object]] = None) -> Generator[Pair]:
+    def read(text: str, filter_: _t.Optional[Callable[[str], object]] = None) -> Generator[_RawEntryPointLine]:
         lines = filter(filter_, map(str.strip, text.splitlines()))
-        name = None
-        for value in lines:
-            section_match = value.startswith("[") and value.endswith("]")
-            if section_match:
-                name = value.strip("[]")
+        group = None
+        for line in lines:
+            if line[0] == "[" and line[-1] == "]":
+                group = line[1:-1]
                 continue
-            yield Pair(name, value)
+            yield _RawEntryPointLine(group, line)
 
-    @staticmethod
-    def valid(line: str) -> bool:
-        return bool(line and not line.startswith("#"))
+    @classmethod
+    def section_pairs(cls, text: str) -> Generator[_RawEntryPoint]:
+        for section in cls.read(text, filter_=cls.is_valid):
+            if section.group is not None:
+                yield section.parse_ep()
 
 
 class EntryPoint:
@@ -196,8 +205,6 @@ class EntryPoint:
     following the attr, and following any extras.
     """
 
-    __slots__ = ("name", "value", "group", "dist")
-
     name: str
     value: str
     group: str
@@ -208,6 +215,59 @@ class EntryPoint:
         object.__setattr__(self, "value", value)
         object.__setattr__(self, "group", group)
         object.__setattr__(self, "dist", None)
+
+    @functools.cached_property
+    def module(self) -> str:
+        match = self.pattern.match(self.value)
+        assert match is not None
+        return match.group("module")
+
+    @functools.cached_property
+    def attr(self) -> str:
+        match = self.pattern.match(self.value)
+        assert match is not None
+        return match.group("attr")
+
+    @functools.cached_property
+    def extras(self) -> list[str]:
+        match = self.pattern.match(self.value)
+        assert match is not None
+        return re.findall(r"\w+", match.group("extras") or "")
+
+    @property
+    def _key(self) -> tuple[str, str, str]:
+        return (self.name, self.value, self.group)
+
+    def _for_dist(self, dist: Distribution) -> Self:
+        object.__setattr__(self, "dist", dist)
+        return self
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}(name={self.name!r}, value={self.value!r}, group={self.group!r})"
+
+    def __hash__(self) -> int:
+        return hash(self._key)
+
+    def __eq__(self, other: object, /) -> bool:
+        if not isinstance(other, type(self)):
+            return NotImplemented
+        return self._key == other._key
+
+    def __lt__(self, other: Self, /) -> bool:
+        if not isinstance(other, type(self)):
+            return NotImplemented
+        return self._key < other._key
+
+    def __setattr__(self, name: str, value: _t.Any, /):
+        msg = "EntryPoint objects are immutable."
+        raise AttributeError(msg)
+
+    def __getstate__(self):
+        return (self.name, self.value, self.group, self.dist)
+
+    def __setstate__(self, state: tuple[_t.Any, ...]) -> None:
+        for attr_name, attr_val in zip(("name", "value", "group", "dist"), state):
+            object.__setattr__(self, attr_name, attr_val)
 
     def load(self) -> _t.Any:
         """Load the entry point from its definition. If only a module
@@ -220,27 +280,22 @@ class EntryPoint:
         attrs = filter(None, (match.group("attr") or "").split("."))
         return functools.reduce(getattr, attrs, module)
 
-    @property
-    def module(self) -> str:
-        match = self.pattern.match(self.value)
-        assert match is not None
-        return match.group("module")
+    @staticmethod
+    def _disallow_dist(params: dict[str, _t.Any]) -> None:
+        """Querying by dist is not allowed (dist objects are not comparable).
 
-    @property
-    def attr(self) -> str:
-        match = self.pattern.match(self.value)
-        assert match is not None
-        return match.group("attr")
-
-    @property
-    def extras(self) -> list[str]:
-        match = self.pattern.match(self.value)
-        assert match is not None
-        return re.findall(r"\w+", match.group("extras") or "")
-
-    def _for_dist(self, dist: Distribution) -> Self:
-        object.__setattr__(self, "dist", dist)
-        return self
+        >>> EntryPoint(name='fan', value='fav', group='fag').matches(dist='foo')
+        Traceback (most recent call last):
+        ...
+        ValueError: "dist" is not suitable for matching...
+        """
+        if "dist" in params:
+            msg = (
+                '"dist" is not suitable for matching. '
+                "Instead, use Distribution.entry_points.select() on a "
+                "located distribution."
+            )
+            raise ValueError(msg)
 
     def matches(self, **params: _t.Any) -> bool:
         """Determine if this entry point matches the given parameters.
@@ -264,55 +319,6 @@ class EntryPoint:
         self._disallow_dist(params)
         attrs = (getattr(self, param) for param in params)
         return all(param_val == attr for param_val, attr in zip(params.values(), attrs))
-
-    @staticmethod
-    def _disallow_dist(params: dict[str, _t.Any]) -> None:
-        """Querying by dist is not allowed (dist objects are not comparable).
-
-        >>> EntryPoint(name='fan', value='fav', group='fag').matches(dist='foo')
-        Traceback (most recent call last):
-        ...
-        ValueError: "dist" is not suitable for matching...
-        """
-        if "dist" in params:
-            msg = (
-                '"dist" is not suitable for matching. '
-                "Instead, use Distribution.entry_points.select() on a "
-                "located distribution."
-            )
-            raise ValueError(msg)
-
-    def _key(self) -> tuple[str, str, str]:
-        return (self.name, self.value, self.group)
-
-    def __repr__(self):
-        return f"{self.__class__.__name__}(name={self.name!r}, value={self.value!r}, group={self.group!r})"
-
-    def __hash__(self) -> int:
-        return hash(self._key())
-
-    def __eq__(self, other: object, /) -> bool:
-        if not isinstance(other, type(self)):
-            return NotImplemented
-        return self._key() == other._key()
-
-    def __lt__(self, other: Self, /) -> bool:
-        if not isinstance(other, type(self)):
-            return NotImplemented
-        return self._key() < other._key()
-
-    def __setattr__(self, name: str, value: _t.Any, /):
-        msg = "EntryPoint objects are immutable."
-        raise AttributeError(msg)
-
-    def __getstate__(self):
-        return (self.name, self.value, self.group, self.dist)
-
-    def __setstate__(self, state: tuple[_t.Any, ...]) -> None:
-        object.__setattr__(self, "name", state[0])
-        object.__setattr__(self, "value", state[1])
-        object.__setattr__(self, "group", state[2])
-        object.__setattr__(self, "dist", state[3])
 
 
 class EntryPoints(tuple[EntryPoint, ...]):
@@ -386,7 +392,7 @@ class Distribution(metaclass=abc.ABCMeta):
         """
 
     @abc.abstractmethod
-    def locate_file(self, path: _StrPath) -> _meta.SimplePath:
+    def locate_file(self, path: StrPath) -> _meta.SimplePath:
         """
         Given a path to a file in this distribution, return a SimplePath
         to it.
@@ -455,15 +461,15 @@ class Distribution(metaclass=abc.ABCMeta):
         """
 
         # NOTE: Implementation based on partition() in itertools recipes.
+        dists1, dists2 = tee(dists)
 
         def has_metadata(dist: Distribution) -> bool:
             return bool(dist.metadata)
 
-        dists1, dists2 = tee(dists)
         return chain(filter(has_metadata, dists1), filterfalse(has_metadata, dists2))
 
     @staticmethod
-    def at(path: _StrPath) -> Distribution:
+    def at(path: StrPath) -> Distribution:
         """Return a Distribution for the indicated metadata path.
 
         :param path: a string or path-like object
@@ -497,7 +503,8 @@ class Distribution(metaclass=abc.ABCMeta):
             # (which points to the egg-info file) attribute unchanged.
             or self.read_text("")
         )
-        return _adapters.NaturalMessage.from_original(email.message_from_string(opt_text))
+        text = opt_text or ""
+        return _adapters.MetadataMessage.from_original(email.message_from_string(text))
 
     @property
     def name(self) -> str:
@@ -525,8 +532,8 @@ class Distribution(metaclass=abc.ABCMeta):
         """
 
         return EntryPoints(
-            EntryPoint(name=item.value.name, value=item.value.value, group=item.name)._for_dist(self)
-            for item in Sectioned.section_pairs(self.read_text("entry_points.txt") or "")
+            EntryPoint(name=item.name, value=item.obj_ref, group=item.group)._for_dist(self)
+            for item in _EntryPointConfigParser.section_pairs(self.read_text("entry_points.txt") or "")
         )
 
     @property
@@ -552,31 +559,18 @@ class Distribution(metaclass=abc.ABCMeta):
             result.dist = self
             return result
 
-        def make_files(lines: _t.Optional[list[str]]) -> Generator[_path.PackagePath]:
-            if lines is None:
-                return None
+        file_path_lines = (
+            self._read_files_distinfo()
+            or self._read_files_egginfo_installed()
+            or self._read_files_egginfo_sources()
+        )  # fmt: skip
 
-            # Delay csv import, since Distribution.files is not as widely used
-            # as other parts of importlib.metadata
-            import csv
+        if file_path_lines is None:
+            return None
 
-            for row in csv.reader(lines):
-                yield make_file(*row)
-
-        def skip_missing_files(
-            package_paths: _t.Optional[Iterable[_path.PackagePath]],
-        ) -> _t.Optional[list[_path.PackagePath]]:
-            if package_paths is None:
-                return None
-            return [path for path in package_paths if path.locate().exists()]
-
-        return skip_missing_files(
-            make_files(
-                self._read_files_distinfo()
-                or self._read_files_egginfo_installed()
-                or self._read_files_egginfo_sources()
-            )
-        )
+        package_paths = (make_file(*row) for row in csv.reader(file_path_lines))
+        existing_package_files = (path for path in package_paths if path.locate().exists())
+        return list(existing_package_files)
 
     def _read_files_distinfo(self) -> _t.Optional[list[str]]:
         """Read the lines of RECORD."""
@@ -599,7 +593,7 @@ class Distribution(metaclass=abc.ABCMeta):
         # But this subdir is only available from PathDistribution's
         # self._path.
         subdir = getattr(self, "_path", None)
-        if not text or not subdir:
+        if not (text and subdir):
             return None
 
         paths = (
@@ -628,21 +622,21 @@ class Distribution(metaclass=abc.ABCMeta):
     def requires(self) -> _t.Optional[list[str]]:
         """Generated requirements specified for this Distribution"""
         reqs = self._read_dist_info_reqs() or self._read_egg_info_reqs()
-        return reqs and list(reqs)
+        return list(reqs) if (reqs is not None) else reqs
 
-    def _read_dist_info_reqs(self):
+    def _read_dist_info_reqs(self) -> _t.Optional[list[_t.Any]]:
         return self.metadata.get_all("Requires-Dist")
 
-    def _read_egg_info_reqs(self):
+    def _read_egg_info_reqs(self) -> _t.Optional[Generator[str]]:
         source = self.read_text("requires.txt")
         return (self._deps_from_requires_text(source)) if (source is not None) else None
 
     @classmethod
     def _deps_from_requires_text(cls, source: str) -> Generator[str]:
-        return cls._convert_egg_info_reqs_to_simple_reqs(Sectioned.read(source))
+        return cls._convert_egg_info_reqs_to_simple_reqs(_EntryPointConfigParser.read(source))
 
     @staticmethod
-    def _convert_egg_info_reqs_to_simple_reqs(sections: Iterable[Pair]) -> Generator[str]:
+    def _convert_egg_info_reqs_to_simple_reqs(sections: Iterable[_RawEntryPointLine]) -> Generator[str]:
         """
         Historically, setuptools would solicit and store 'extra'
         requirements, including those with environment markers,
@@ -661,17 +655,17 @@ class Distribution(metaclass=abc.ABCMeta):
             return " " * ("@" in req)
 
         for section in sections:
-            space = url_req_space(section.value)
+            space = url_req_space(section.line)
 
-            section_name = section.name or ""
+            section_name = section.group or ""
             extra, _sep, markers = section_name.partition(":")
             conditions: list[str] = []
 
             # Format the conditions as needed if they exist.
-            if extra and markers:
-                markers = f"({markers})"
             if extra:
                 extra = f'extra == "{extra}"'
+                if markers:
+                    markers = f"({markers})"
 
             # Add them to the conditions if they exist.
             if markers:
@@ -682,7 +676,7 @@ class Distribution(metaclass=abc.ABCMeta):
             # Assemble the marker if there are any conditions.
             quoted_marker = ("; " + " and ".join(conditions)) if conditions else ""
 
-            yield section.value + space + quoted_marker
+            yield section.line + space + quoted_marker
 
     @property
     def origin(self) -> _t.Any:
@@ -690,12 +684,10 @@ class Distribution(metaclass=abc.ABCMeta):
 
     def _load_json(self, filename: str) -> _t.Any:
         text = self.read_text(filename)
-        if text is None:
-            return None
-        return json.loads(text, object_hook=lambda data: SimpleNamespace(**data))
+        return json.loads(text, object_hook=lambda data: types.SimpleNamespace(**data)) if (text is not None) else None
 
 
-class DistributionFinder:
+class DistributionFinder(importlib.abc.MetaPathFinder):
     """A MetaPathFinder capable of discovering installed distributions.
 
     Custom providers should implement this interface in order to
@@ -922,7 +914,7 @@ class Prepared:
         return bool(self.name)
 
 
-@install
+@_stdlib_compat.install
 class MetadataPathFinder(DistributionFinder):
     """A degenerate finder for distribution packages on the file system.
 
@@ -968,7 +960,7 @@ class PathDistribution(Distribution):
         """
         self._path = path
 
-    def read_text(self, filename: _StrPath) -> _t.Optional[str]:
+    def read_text(self, filename: StrPath) -> _t.Optional[str]:
         try:
             return self._path.joinpath(filename).read_text(encoding="utf-8")
         except (
@@ -984,7 +976,7 @@ class PathDistribution(Distribution):
 
     read_text.__doc__ = Distribution.read_text.__doc__
 
-    def locate_file(self, path: _StrPath) -> _meta.SimplePath:
+    def locate_file(self, path: StrPath) -> _meta.SimplePath:
         return self._path.parent / path
 
     @property
@@ -1051,17 +1043,13 @@ def version(distribution_name: str) -> str:
     return distribution(distribution_name).version
 
 
-def _unique(
-    iterable: Iterable[Distribution],
-    key: Callable[[Distribution], object] = py39.normalized_name,
-) -> Generator[Distribution]:
+def _unique(iterable: Iterable[Distribution]) -> Generator[Distribution]:
     seen: set[object] = set()
     for item in iterable:
-        normalized = key(item)
-        if normalized in seen:
-            continue
-        seen.add(normalized)
-        yield item
+        normalized = py39.normalized_name(item)
+        if normalized not in seen:
+            seen.add(normalized)
+            yield item
 
 
 def entry_points(**params: _t.Any) -> EntryPoints:
@@ -1144,7 +1132,7 @@ def _get_toplevel_name(name: _path.PackagePath) -> str:
     return _topmost(name) or _getmodulename(name) or str(name)
 
 
-def _getmodulename(path: _StrPath) -> _t.Optional[str]:
+def _getmodulename(path: StrPath) -> _t.Optional[str]:
     """Vendored version of `inspect.getmodulename()` to avoid a heavy import.
 
     See original docstring below:
@@ -1163,10 +1151,8 @@ def _getmodulename(path: _StrPath) -> _t.Optional[str]:
 
 
 def _top_level_inferred(dist: Distribution) -> Generator[str]:
-    if dist.files is None:
-        return
-
-    opt_names = set(map(_get_toplevel_name, dist.files))
+    files = dist.files if (dist.files is not None) else []
+    opt_names = set(map(_get_toplevel_name, files))
 
     for name in opt_names:
         # Ensure the names are importable.
