@@ -26,11 +26,17 @@ from contextlib import suppress
 from importlib.abc import MetaPathFinder
 from itertools import chain, filterfalse, starmap, tee
 
-from . import _lazy as _l
 from . import _lazy as _t
 from ._compat import install
 from ._lazy import TYPE_CHECKING
 from .compat import py39, py311
+
+# No need to import types.
+if TYPE_CHECKING:
+    from types import SimpleNamespace
+else:
+    SimpleNamespace = type(sys.implementation)
+
 
 __all__ = [
     'Distribution',
@@ -56,13 +62,33 @@ if TYPE_CHECKING:
 
 def __getattr__(name: str) -> _t.Any:
     if name in {"PackageMetadata", "SimplePath"}:
-        obj = getattr(_l._meta, name)
+        # Deferred for startup performance.
+        from . import _meta
+
+        obj = getattr(_meta, name)
+
     else:
         msg = f"module {__name__!r} has no attribute {name!r}"
         raise AttributeError(msg)
 
     globals()[name] = obj
     return obj
+
+
+def __dir__() -> list[str]:
+    return sorted(globals().keys() | __all__)
+
+
+# A hack which, when combined with deferred annotations,
+# allows using PackageMetadata and SimplePath in annotations below.
+if TYPE_CHECKING:
+
+    class _self_mod:
+        PackageMetadata: _t.TypeAlias = PackageMetadata
+        SimplePath: _t.TypeAlias = SimplePath
+
+else:
+    _self_mod = sys.modules[__name__]
 
 
 class PackageNotFoundError(ModuleNotFoundError):
@@ -72,7 +98,7 @@ class PackageNotFoundError(ModuleNotFoundError):
         super().__init__(f"No package metadata was found for {name}", name=name)
 
 
-class Pair(namedtuple('Pair', 'name value')):
+class Pair(namedtuple('Pair', 'name value')):  # noqa: PYI024 # No runtime dependencies on typing.
     name: str
     value: _t.Any
 
@@ -356,7 +382,7 @@ class PackagePath(pathlib.PurePosixPath):
     size: _t.Optional[int]
     dist: Distribution
 
-    def locate(self) -> _l._meta.SimplePath:
+    def locate(self) -> _self_mod.SimplePath:
         """Return a path-like object for this path"""
         return self.dist.locate_file(self)
 
@@ -410,7 +436,7 @@ class Distribution(metaclass=abc.ABCMeta):
         """
 
     @abc.abstractmethod
-    def locate_file(self, path: str | os.PathLike[str]) -> _l._meta.SimplePath:
+    def locate_file(self, path: str | os.PathLike[str]) -> _self_mod.SimplePath:
         """
         Given a path to a file in this distribution, return a SimplePath
         to it.
@@ -500,7 +526,7 @@ class Distribution(metaclass=abc.ABCMeta):
         return filter(None, declared)
 
     @property
-    def metadata(self) -> _l._meta.PackageMetadata:
+    def metadata(self) -> _self_mod.PackageMetadata:
         """Return the parsed metadata for this Distribution.
 
         The returned object will have keys that name the various bits of
@@ -714,7 +740,7 @@ class Distribution(metaclass=abc.ABCMeta):
         source = self.read_text(filename)
         if source is None:
             return None
-        return json.loads(source, object_hook=lambda data: _l.SimpleNamespace(**data))
+        return json.loads(source, object_hook=lambda data: SimpleNamespace(**data))
 
 
 class DistributionFinder(MetaPathFinder):
@@ -769,7 +795,10 @@ class DistributionFinder(MetaPathFinder):
             return vars(self).get('path', sys.path)
 
     @abc.abstractmethod
-    def find_distributions(self, context: DistributionFinder.Context = Context()) -> Iterable[Distribution]:
+    def find_distributions(
+        self,
+        context: DistributionFinder.Context = Context(),
+    ) -> Iterable[Distribution]:
         """
         Find distributions.
 
@@ -983,7 +1012,7 @@ class MetadataPathFinder(DistributionFinder):
 
 
 class PathDistribution(Distribution):
-    def __init__(self, path: _l._meta.SimplePath) -> None:
+    def __init__(self, path: _self_mod.SimplePath) -> None:
         """Construct a distribution.
 
         :param path: SimplePath indicating the metadata directory.
@@ -1004,7 +1033,7 @@ class PathDistribution(Distribution):
 
     read_text.__doc__ = Distribution.read_text.__doc__
 
-    def locate_file(self, path: str | os.PathLike[str]) -> _l._meta.SimplePath:
+    def locate_file(self, path: str | os.PathLike[str]) -> _self_mod.SimplePath:
         return self._path.parent / path
 
     @property
@@ -1054,7 +1083,7 @@ def distributions(**kwargs: _t.Any) -> Iterable[Distribution]:
     return Distribution.discover(**kwargs)
 
 
-def metadata(distribution_name: str) -> _l._meta.PackageMetadata:
+def metadata(distribution_name: str) -> _self_mod.PackageMetadata:
     """Get the metadata for the named package.
 
     :param distribution_name: The name of the distribution package to query.
