@@ -1,9 +1,13 @@
+from __future__ import annotations
+
 import sys
+
+from . import _lazy as _t
 
 __all__ = ['install']
 
 
-def install(cls):
+def install(cls: _t.TypeT) -> _t.TypeT:
     """
     Class decorator for installation on sys.meta_path.
 

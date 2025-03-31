@@ -24,7 +24,7 @@ def normalized_name(dist: Distribution) -> _t.Optional[str]:
         return Prepared.normalize(getattr(dist, "name", None) or dist.metadata['Name'])
 
 
-def ep_matches(ep: EntryPoint, **params) -> bool:
+def ep_matches(ep: EntryPoint, **params: _t.Any) -> bool:
     """
     Workaround for ``EntryPoint`` objects without the ``matches`` method.
     """

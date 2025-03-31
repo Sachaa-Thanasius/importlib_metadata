@@ -61,7 +61,7 @@ class SimplePath(Protocol):
     @property
     def parent(self) -> SimplePath: ...  # pragma: no cover
 
-    def read_text(self, encoding=None) -> str: ...  # pragma: no cover
+    def read_text(self, encoding: Optional[str] = None) -> str: ...  # pragma: no cover
 
     def read_bytes(self) -> bytes: ...  # pragma: no cover
 

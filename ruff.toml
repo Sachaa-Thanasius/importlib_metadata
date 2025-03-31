@@ -2,6 +2,7 @@
 extend = "pyproject.toml"
 
 [lint]
+typing-modules = ["importlib_resources._lazy"]
 extend-select = [
 	# upstream
  
@@ -48,6 +49,9 @@ ignore = [
 
  	# local
 ]
+
+[lint.pyupgrade]
+keep-runtime-typing = true
 
 [format]
 # Enable preview to get hugged parenthesis unwrapping and other nice surprises

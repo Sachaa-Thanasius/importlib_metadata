@@ -32,11 +32,16 @@ __all__ = (
     # ---- Typing/annotation symbols ----
     # typing
     "Any",
+    "NoReturn",
     "Optional",
     "Union",
+    "Self",  # >=3.11
 
     # types
     "SimpleNamespace",
+
+    # Other
+    "TypeT",
 
     # ---- Used at runtime ----
     "TYPE_CHECKING",
@@ -46,19 +51,29 @@ __all__ = (
 
 # Type checkers (well, mypy) needs this block to understand what __getattr__() does currently.
 if TYPE_CHECKING:
-    from typing import Any, Optional, Union
+    from typing import Any, NoReturn, Optional, TypeVar, Union
 
     from . import _meta
+
+    TypeT = TypeVar("TypeT", bound=type)
 
 
 def __getattr__(name: str) -> object:
     if name == "_meta":
         from . import _meta as obj
 
-    if name in {"Any", "Optional", "Union"}:
+    if name in {"Any", "NoReturn", "Optional", "Union"} or (
+        sys.version_info >= (3, 11) and name == "Self"
+    ):
         import typing
 
         obj = getattr(typing, name)
+
+    elif name == "TypeT":
+        from typing import TypeVar
+
+        obj = TypeVar("TypeT", bound=type)
+
     else:
         msg = f"module {__name__!r} has no attribute {name!r}"
         raise AttributeError(msg)
@@ -71,8 +86,16 @@ def __dir__() -> list[str]:
     return sorted(globals().keys() | __all__)
 
 
-# No need to import types to get SimpleNamespace.
+# No need to import types.
 if TYPE_CHECKING:
     from types import SimpleNamespace
 else:
     SimpleNamespace = type(sys.implementation)
+
+
+if TYPE_CHECKING:
+    from typing_extensions import Self
+elif sys.version_info < (3, 11):
+
+    class Self:
+        """Placeholder for typing.Self."""

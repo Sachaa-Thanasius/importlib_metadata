@@ -10,7 +10,6 @@ for more detail.
 from __future__ import annotations
 
 import abc
-import collections
 import email
 import functools
 import importlib
@@ -21,7 +20,8 @@ import pathlib
 import posixpath
 import re
 import sys
-from collections.abc import Generator, Iterable, Mapping
+from collections import defaultdict, namedtuple
+from collections.abc import Callable, Generator, Iterable, Iterator, Mapping
 from contextlib import suppress
 from importlib.abc import MetaPathFinder
 from itertools import chain, filterfalse, starmap, tee
@@ -48,11 +48,12 @@ __all__ = [
     'version',
 ]
 
+
+# Type checkers (well, mypy) needs this block to understand what __getattr__() does currently.
 if TYPE_CHECKING:
     from ._meta import PackageMetadata, SimplePath
 
 
-# Type checkers (well, mypy) needs this block to understand what __getattr__() does currently.
 def __getattr__(name: str) -> _t.Any:
     if name in {"PackageMetadata", "SimplePath"}:
         obj = getattr(_l._meta, name)
@@ -71,9 +72,12 @@ class PackageNotFoundError(ModuleNotFoundError):
         super().__init__(f"No package metadata was found for {name}", name=name)
 
 
-class Pair(collections.namedtuple('Pair', 'name value')):
+class Pair(namedtuple('Pair', 'name value')):
+    name: str
+    value: _t.Any
+
     @classmethod
-    def parse(cls, text):
+    def parse(cls, text: str):
         return cls(*map(str.strip, text.split("=", 1)))
 
 
@@ -116,7 +120,7 @@ class Sectioned:
     """
 
     @classmethod
-    def section_pairs(cls, text):
+    def section_pairs(cls, text: str):
         return (
             section._replace(value=Pair.parse(section.value))
             for section in cls.read(text, filter_=cls.valid)
@@ -124,7 +128,10 @@ class Sectioned:
         )
 
     @staticmethod
-    def read(text, filter_=None):
+    def read(
+        text: str,
+        filter_: _t.Optional[Callable[[str], object]] = None,
+    ) -> Generator[Pair]:
         lines = filter(filter_, map(str.strip, text.splitlines()))
         name = None
         for value in lines:
@@ -135,7 +142,7 @@ class Sectioned:
             yield Pair(name, value)
 
     @staticmethod
-    def valid(line: str):
+    def valid(line: str) -> object:
         return line and not line.startswith('#')
 
 
@@ -215,11 +222,11 @@ class EntryPoint:
         assert match is not None
         return re.findall(r'\w+', match.group('extras') or '')
 
-    def _for(self, dist):
+    def _for(self, dist: Distribution) -> _t.Self:
         vars(self).update(dist=dist)
         return self
 
-    def matches(self, **params):
+    def matches(self, **params: _t.Any) -> bool:
         """
         EntryPoint matches the given parameters.
 
@@ -244,7 +251,7 @@ class EntryPoint:
         return all(map(operator.eq, params.values(), attrs))
 
     @staticmethod
-    def _disallow_dist(params):
+    def _disallow_dist(params: dict[str, object]) -> None:
         """
         Querying by dist is not allowed (dist objects are not comparable).
         >>> EntryPoint(name='fan', value='fav', group='fag').matches(dist='foo')
@@ -259,26 +266,31 @@ class EntryPoint:
                 "located distribution."
             )
 
+    @property
     def _key(self):
         return self.name, self.value, self.group
 
-    def __lt__(self, other):
-        return self._key() < other._key()
+    def __lt__(self, other: object, /) -> bool:
+        if not isinstance(other, self.__class__):
+            return NotImplemented
+        return self._key < other._key
 
-    def __eq__(self, other):
-        return self._key() == other._key()
+    def __eq__(self, other: object, /) -> bool:
+        if not isinstance(other, self.__class__):
+            return NotImplemented
+        return self._key == other._key
 
-    def __setattr__(self, name, value):
+    def __setattr__(self, name: str, value: _t.Any, /) -> _t.NoReturn:
         raise AttributeError("EntryPoint objects are immutable.")
 
     def __repr__(self):
         return (
-            f'EntryPoint(name={self.name!r}, value={self.value!r}, '
+            f'{self.__class__.__name__}(name={self.name!r}, value={self.value!r}, '
             f'group={self.group!r})'
         )
 
     def __hash__(self) -> int:
-        return hash(self._key())
+        return hash(self._key)
 
 
 class EntryPoints(tuple[EntryPoint, ...]):
@@ -302,9 +314,9 @@ class EntryPoints(tuple[EntryPoint, ...]):
         Repr with classname and tuple constructor to
         signal that we deviate from regular tuple behavior.
         """
-        return '%s(%r)' % (self.__class__.__name__, tuple(self))
+        return f'{self.__class__.__name__}({tuple(self)!r})'
 
-    def select(self, **params) -> EntryPoints:
+    def select(self, **params: _t.Any) -> EntryPoints:
         """
         Select entry points from self that match the
         given parameters (typically group and/or name).
@@ -326,11 +338,11 @@ class EntryPoints(tuple[EntryPoint, ...]):
         return {ep.group for ep in self}
 
     @classmethod
-    def _from_text_for(cls, text, dist):
+    def _from_text_for(cls, text: _t.Optional[str], dist: Distribution) -> _t.Self:
         return cls(ep._for(dist) for ep in cls._from_text(text))
 
     @staticmethod
-    def _from_text(text):
+    def _from_text(text: _t.Optional[str]) -> Generator[EntryPoint]:
         return (
             EntryPoint(name=item.value.name, value=item.value.value, group=item.name)
             for item in Sectioned.section_pairs(text or '')
@@ -435,7 +447,10 @@ class Distribution(metaclass=abc.ABCMeta):
 
     @classmethod
     def discover(
-        cls, *, context: _t.Optional[DistributionFinder.Context] = None, **kwargs
+        cls,
+        *,
+        context: _t.Optional[DistributionFinder.Context] = None,
+        **kwargs: _t.Any,
     ) -> Iterable[Distribution]:
         """Return an iterable of Distribution objects for all packages.
 
@@ -550,21 +565,27 @@ class Distribution(metaclass=abc.ABCMeta):
         able to resolve filenames provided by the package.
         """
 
-        def make_file(name, hash=None, size_str=None):
+        def make_file(
+            name: str,
+            hash: _t.Optional[str] = None,
+            size_str: _t.Optional[str] = None,
+        ):
             result = PackagePath(name)
             result.hash = FileHash(hash) if hash else None
             result.size = int(size_str) if size_str else None
             result.dist = self
             return result
 
-        def make_files(lines):
+        def make_files(lines: Iterable[str]) -> Iterable[PackagePath]:
             # Delay csv import, since Distribution.files is not as widely used
             # as other parts of importlib.metadata
             import csv
 
             return starmap(make_file, csv.reader(lines))
 
-        def skip_missing_files(package_paths):
+        def skip_missing_files(
+            package_paths: Iterable[PackagePath],
+        ) -> list[PackagePath]:
             return list(filter(lambda path: path.locate().exists(), package_paths))
 
         file_lines = (
@@ -642,11 +663,13 @@ class Distribution(metaclass=abc.ABCMeta):
         )
 
     @classmethod
-    def _deps_from_requires_text(cls, source):
+    def _deps_from_requires_text(cls, source: str) -> Generator[str]:
         return cls._convert_egg_info_reqs_to_simple_reqs(Sectioned.read(source))
 
     @staticmethod
-    def _convert_egg_info_reqs_to_simple_reqs(sections):
+    def _convert_egg_info_reqs_to_simple_reqs(
+        sections: Iterable[Pair],
+    ) -> Generator[str]:
         """
         Historically, setuptools would solicit and store 'extra'
         requirements, including those with environment markers,
@@ -657,18 +680,18 @@ class Distribution(metaclass=abc.ABCMeta):
         latter. See _test_deps_from_requires_text for an example.
         """
 
-        def make_condition(name):
+        def make_condition(name: str) -> str:
             return name and f'extra == "{name}"'
 
-        def quoted_marker(section):
+        def quoted_marker(section: str):
             section = section or ''
-            extra, sep, markers = section.partition(':')
+            extra, _sep, markers = section.partition(':')
             if extra and markers:
                 markers = f'({markers})'
             conditions = list(filter(None, [markers, make_condition(extra)]))
             return '; ' + ' and '.join(conditions) if conditions else ''
 
-        def url_req_space(req):
+        def url_req_space(req: str):
             """
             PEP 508 requires a space between the url_spec and the quoted_marker.
             Ref python/importlib_metadata#357.
@@ -684,7 +707,7 @@ class Distribution(metaclass=abc.ABCMeta):
     def origin(self):
         return self._load_json('direct_url.json')
 
-    def _load_json(self, filename):
+    def _load_json(self, filename: str) -> _t.Any:
         # Deferred for performance (python/importlib_metadata#503)
         import json
 
@@ -731,7 +754,7 @@ class DistributionFinder(MetaPathFinder):
         A name of ``None`` matches all distributions.
         """
 
-        def __init__(self, **kwargs):
+        def __init__(self, **kwargs: _t.Any):
             vars(self).update(kwargs)
 
         @property
@@ -746,7 +769,7 @@ class DistributionFinder(MetaPathFinder):
             return vars(self).get('path', sys.path)
 
     @abc.abstractmethod
-    def find_distributions(self, context=Context()) -> Iterable[Distribution]:
+    def find_distributions(self, context: DistributionFinder.Context = Context()) -> Iterable[Distribution]:
         """
         Find distributions.
 
@@ -773,21 +796,27 @@ class FastPath:
     """
 
     @functools.lru_cache()  # type: ignore[misc]
-    def __new__(cls, root):
+    def __new__(cls, root: str):
         return super().__new__(cls)
 
-    def __init__(self, root):
+    def __init__(self, root: str):
         self.root = root
-        self.lookup = functools.lru_cache(self.lookup)
+        self.lookup = functools.lru_cache(self._lookup)
 
-    def joinpath(self, child):
+    def joinpath(self, child: str) -> pathlib.Path:
         return pathlib.Path(self.root, child)
 
-    def children(self):
-        with suppress(Exception):
+    def children(self) -> list[str]:
+        try:
             return os.listdir(self.root or '.')
-        with suppress(Exception):
-            return self.zip_children()
+        except Exception:
+            pass
+
+        try:
+            return list(self.zip_children())
+        except Exception:
+            pass
+
         return []
 
     def zip_children(self):
@@ -795,12 +824,12 @@ class FastPath:
         from zipp.compat.overlay import zipfile
 
         zip_path = zipfile.Path(self.root)
-        names = zip_path.root.namelist()
+        names: list[str] = zip_path.root.namelist()
         self.joinpath = zip_path.joinpath
 
         return dict.fromkeys(child.split(posixpath.sep, 1)[0] for child in names)
 
-    def search(self, name):
+    def search(self, name: Prepared) -> Iterable[pathlib.Path]:
         return self.lookup(self.mtime).search(name)
 
     @property
@@ -809,7 +838,7 @@ class FastPath:
             return os.stat(self.root).st_mtime
         self.lookup.cache_clear()
 
-    def lookup(self, mtime):
+    def _lookup(self, mtime: float):
         return Lookup(self)
 
 
@@ -829,8 +858,8 @@ class Lookup:
 
         base = os.path.basename(path.root).lower()
         base_is_egg = base.endswith(".egg")
-        self.infos = collections.defaultdict(list)
-        self.eggs = collections.defaultdict(list)
+        self.infos: defaultdict[str, list[pathlib.Path]] = defaultdict(list)
+        self.eggs: defaultdict[str, list[pathlib.Path]] = defaultdict(list)
 
         for child in path.children():
             low = child.lower()
@@ -847,20 +876,16 @@ class Lookup:
         self.infos.default_factory = None
         self.eggs.default_factory = None
 
-    def search(self, prepared: Prepared):
+    def search(self, prepared: Prepared) -> Iterator[pathlib.Path]:
         """
         Yield all infos and eggs matching the Prepared query.
         """
-        infos = (
-            self.infos.get(prepared.normalized, [])
-            if prepared
-            else chain.from_iterable(self.infos.values())
-        )
-        eggs = (
-            self.eggs.get(prepared.legacy_normalized, [])
-            if prepared
-            else chain.from_iterable(self.eggs.values())
-        )
+        if prepared:
+            infos = self.infos.get(prepared.normalized, [])
+            eggs = self.eggs.get(prepared.legacy_normalized, [])
+        else:
+            infos = chain.from_iterable(self.infos.values())
+            eggs = chain.from_iterable(self.eggs.values())
         return chain(infos, eggs)
 
 
@@ -895,14 +920,14 @@ class Prepared:
         self.legacy_normalized = self.legacy_normalize(name)
 
     @staticmethod
-    def normalize(name):
+    def normalize(name: str) -> str:
         """
         PEP 503 normalization plus dashes as underscores.
         """
         return re.sub(r"[-_.]+", "-", name).lower().replace('-', '_')
 
     @staticmethod
-    def legacy_normalize(name):
+    def legacy_normalize(name: str) -> str:
         """
         Normalize the package name as found in the convention in
         older packaging tools versions and specs.
@@ -922,7 +947,7 @@ class MetadataPathFinder(DistributionFinder):
     """
 
     @classmethod
-    def find_spec(cls, *args, **kwargs):
+    def find_spec(cls, *args: _t.Any, **kwargs: _t.Any):
         """
         A null finder method so that MetadataPathFinder qualifies as a meta path finder,
         but can defer spec finding to the rest of sys.meta_path.
@@ -931,7 +956,7 @@ class MetadataPathFinder(DistributionFinder):
 
     @classmethod
     def find_distributions(
-        cls, context=DistributionFinder.Context()
+        cls, context: DistributionFinder.Context = DistributionFinder.Context()
     ) -> Iterable[PathDistribution]:
         """
         Find distributions.
@@ -945,7 +970,7 @@ class MetadataPathFinder(DistributionFinder):
         return map(PathDistribution, found)
 
     @classmethod
-    def _search_paths(cls, name, paths):
+    def _search_paths(cls, name: str, paths):
         """Find metadata directories in paths heuristically."""
         prepared = Prepared(name)
         return chain.from_iterable(
@@ -995,7 +1020,7 @@ class PathDistribution(Distribution):
         return super()._normalized_name
 
     @staticmethod
-    def _name_from_stem(stem):
+    def _name_from_stem(stem: str):
         """
         >>> PathDistribution._name_from_stem('foo-3.0.egg-info')
         'foo'
@@ -1008,7 +1033,7 @@ class PathDistribution(Distribution):
         filename, ext = os.path.splitext(stem)
         if ext not in ('.dist-info', '.egg-info'):
             return
-        name, sep, rest = filename.partition('-')
+        name = filename.partition('-')[0]
         return name
 
 
@@ -1021,7 +1046,7 @@ def distribution(distribution_name: str) -> Distribution:
     return Distribution.from_name(distribution_name)
 
 
-def distributions(**kwargs) -> Iterable[Distribution]:
+def distributions(**kwargs: _t.Any) -> Iterable[Distribution]:
     """Get all ``Distribution`` instances in the current environment.
 
     :return: An iterable of ``Distribution`` instances.
@@ -1060,7 +1085,7 @@ def _unique(dists: Iterable[Distribution]) -> Generator[Distribution]:
             yield dist
 
 
-def entry_points(**params) -> EntryPoints:
+def entry_points(**params: _t.Any) -> EntryPoints:
     """Return EntryPoint objects for all installed packages.
 
     Pass selection parameters (group or name) to filter the
@@ -1102,14 +1127,14 @@ def packages_distributions() -> Mapping[str, list[str]]:
     >>> all(isinstance(dist, collections.abc.Sequence) for dist in pkgs.values())
     True
     """
-    pkg_to_dist = collections.defaultdict(list)
+    pkg_to_dist: defaultdict[str, list[str]] = defaultdict(list)
     for dist in distributions():
         for pkg in _top_level_declared(dist) or _top_level_inferred(dist):
             pkg_to_dist[pkg].append(dist.metadata['Name'])
     return dict(pkg_to_dist)
 
 
-def _top_level_declared(dist):
+def _top_level_declared(dist: Distribution) -> list[str]:
     return (dist.read_text('top_level.txt') or '').split()
 
 
