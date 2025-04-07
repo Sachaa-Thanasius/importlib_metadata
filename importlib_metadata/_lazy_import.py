@@ -11,7 +11,7 @@ TYPE_CHECKING = False
 
 
 # importlib.abc.Loader changed location in 3.10+ to become cheaper to import,
-# but importlib.abc became relative cheap again in 3.14.
+# but importlib.abc became relatively cheap again in 3.14.
 if TYPE_CHECKING or _sys.version_info >= (3, 14):
     from importlib.abc import Loader as _Loader
 elif _sys.version_info >= (3, 10):  # pragma: >=3.10 cover
